@@ -1,0 +1,30 @@
+--- a/extension.js
++++ b/extension.js
+@@ -1,4 +1,5 @@
+ import Gio from 'gi://Gio';
++import GLib from 'gi://GLib';
+ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+ 
+ const PowerManagerProxyInterface = `
+@@ -150,6 +151,9 @@
+                     const [, w, h, rate] = m;
+                     return w === curWidth && h === curHeight && Math.round(rate) === desiredRate;
+                 });
++
++                // Prioritize Extended VBLANK mode (closest to exact integer rate) over generic CVT mode
++                candidates.sort((a, b) => Math.abs(a[3] - desiredRate) - Math.abs(b[3] - desiredRate));
+ 
+                 const targetMode = candidates.find(m =>
+                     (unpackProp(m[6], 'refresh-rate-mode') ?? 'fixed') === curRrMode
+@@ -171,7 +175,10 @@
+                     const newMonitors = monitorsInLm.map(m => {
+                         const lmConnector = m[0];
+                         if (lmConnector === this._connectorName)
+-                            return [lmConnector, targetMode[0], {}];
++                            return [lmConnector, targetMode[0], {
++                                'color-mode': new GLib.Variant('u', 2),
++                                'rgb-range': new GLib.Variant('u', 1)
++                            }];
+                         const existing = currentModeByConnector.get(lmConnector);
+                         return [lmConnector, existing ? existing[0] : '', {}];
+                     });

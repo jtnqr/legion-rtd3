@@ -1,0 +1,4 @@
+bin/libno_nvml.so
+*.o
+*.so
+.DS_Store

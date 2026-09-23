@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Universal GPU Guard: intercepts NVML queries if NVIDIA dGPU is sleeping
+set -euo pipefail
+
+TARGET="$(basename "$0")"
+LIBNO_NVML="${LIBNO_NVML:-/usr/local/lib/libno_nvml.so}"
+
+# Fallback to user-local library if system library is absent
+if [ ! -f "$LIBNO_NVML" ] && [ -f "$HOME/.local/lib/libno_nvml.so" ]; then
+    LIBNO_NVML="$HOME/.local/lib/libno_nvml.so"
+fi
+
+# Direct invocation support: gpu-guard <command> [args...]
+if [ "$TARGET" = "gpu-guard" ]; then
+    if [ $# -eq 0 ]; then
+        echo "Usage: gpu-guard <command> [args...]" >&2
+        exit 1
+    fi
+    TARGET="$1"
+    shift
+fi
+
+# Locate the actual executable in PATH outside of caller directory
+REAL_BIN=""
+IFS=':' read -ra DIRS <<< "$PATH"
+for d in "${DIRS[@]}"; do
+    if [ "$d" != "$HOME/.local/bin" ] && [ "$d" != "/usr/local/bin" ] && [ -x "$d/$TARGET" ]; then
+        REAL_BIN="$d/$TARGET"
+        break
+    fi
+done
+
+if [ -z "$REAL_BIN" ]; then
+    # Fallback to searching all PATH entries except the invoking script
+    for d in "${DIRS[@]}"; do
+        if [ -x "$d/$TARGET" ]; then
+            CANDIDATE="$d/$TARGET"
+            if [ "$(realpath "$CANDIDATE")" != "$(realpath "$0")" ]; then
+                REAL_BIN="$CANDIDATE"
+                break
+            fi
+        fi
+    done
+fi
+
+if [ -z "$REAL_BIN" ]; then
+    echo "gpu-guard: target command not found in PATH: $TARGET" >&2
+    exit 127
+fi
+
+if [ -f "$LIBNO_NVML" ]; then
+    exec env LD_PRELOAD="$LIBNO_NVML:${LD_PRELOAD:-}" "$REAL_BIN" "$@"
+else
+    exec "$REAL_BIN" "$@"
+fi

@@ -1,0 +1,2 @@
+# Prefer AMD integrated APU as primary display GPU in GNOME Mutter
+ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x1002", ATTR{class}=="0x030000", ENV{mutter-device-preferred-primary}="1"
