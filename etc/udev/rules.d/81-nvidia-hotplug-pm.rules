@@ -1,0 +1,2 @@
+# Re-arm PCIe Runtime Power Management upon display hotplug events (unplugging external HDMI/Type-C)
+ACTION=="change", SUBSYSTEM=="drm", ENV{HOTPLUG}=="1", RUN+="/bin/sh -c 'for dev in /sys/bus/pci/devices/*; do [ -f $$dev/vendor ] && [ $$(cat $$dev/vendor) = 0x10de ] && echo auto > $$dev/power/control; done'"

@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# legion-rtd3: Command-line control and diagnostics for Linux Hybrid Graphics RTD3
+set -euo pipefail
+
+find_nvidia_dev() {
+    for dev in /sys/bus/pci/devices/*; do
+        [ -f "$dev/vendor" ] || continue
+        if [ "$(cat "$dev/vendor")" = "0x10de" ]; then
+            class=$(cat "$dev/class" 2>/dev/null || true)
+            case "$class" in
+                0x0300*|0x0302*)
+                    echo "$dev"
+                    return 0
+                    ;;
+            esac
+        fi
+    done
+    return 1
+}
+
+cmd_status() {
+    echo "=== legion-rtd3: System Power & Display Status ==="
+    
+    # 1. NVIDIA dGPU
+    nv_dev=$(find_nvidia_dev || true)
+    if [ -n "$nv_dev" ]; then
+        pci_id=$(basename "$nv_dev")
+        r_status=$(cat "$nv_dev/power/runtime_status" 2>/dev/null || echo "unknown")
+        p_state=$(cat "$nv_dev/power_state" 2>/dev/null || echo "unknown")
+        ctrl=$(cat "$nv_dev/power/control" 2>/dev/null || echo "unknown")
+        echo "dGPU ($pci_id):"
+        echo "  Power State:    $p_state"
+        echo "  Runtime Status: $r_status"
+        echo "  PM Control:     $ctrl"
+    else
+        echo "dGPU: Not found on PCI bus (Integrated Mode active)"
+    fi
+
+    # 2. Battery Discharge Rate
+    bat_pwr=$(awk '{printf "%.2f W", $1/1000000}' /sys/class/power_supply/BAT*/power_now 2>/dev/null || true)
+    bat_status=$(cat /sys/class/power_supply/BAT*/status 2>/dev/null || echo "N/A")
+    if [ -n "$bat_pwr" ]; then
+        echo "Battery:"
+        echo "  Discharge Rate: $bat_pwr ($bat_status)"
+    else
+        echo "Battery: Running on AC power"
+    fi
+
+    # 3. Display
+    if command -v gdctl >/dev/null 2>&1; then
+        echo "Display:"
+        mode=$(gdctl show 2>/dev/null | grep -E "Monitor eDP-1|1920x1080@" | tr -d " " | tail -n 1 || echo "N/A")
+        echo "  Internal Mode:  $mode"
+    fi
+}
+
+cmd_doctor() {
+    echo "=== legion-rtd3: System Health Audit ==="
+    issues=0
+
+    # 1. Check PM Control
+    nv_dev=$(find_nvidia_dev || true)
+    if [ -n "$nv_dev" ]; then
+        ctrl=$(cat "$nv_dev/power/control" 2>/dev/null || true)
+        if [ "$ctrl" = "auto" ]; then
+            echo "[OK] NVIDIA PCI power/control is set to 'auto'"
+        else
+            echo "[FAIL] NVIDIA PCI power/control is '$ctrl' (expected 'auto')"
+            issues=$((issues + 1))
+        fi
+    fi
+
+    # 2. Check EGL Vendor Priority
+    if [ -f /etc/glvnd/egl_vendor.d/00_mesa.json ]; then
+        echo "[OK] Mesa EGL vendor priority is deployed in /etc/"
+    else
+        echo "[WARN] /etc/glvnd/egl_vendor.d/00_mesa.json missing (Mesa may not take priority)"
+        issues=$((issues + 1))
+    fi
+
+    # 3. Check Background Services
+    for svc in nvidia-persistenced nvidia-powerd; do
+        if systemctl is-active --quiet "$svc" 2>/dev/null; then
+            echo "[FAIL] Service '$svc' is running (prevents dGPU from sleeping)"
+            issues=$((issues + 1))
+        else
+            echo "[OK] Service '$svc' is inactive"
+        fi
+    done
+
+    # 4. Check Open Handles on dGPU
+    if [ -n "$nv_dev" ]; then
+        handles=$(lsof /dev/nvidia* /dev/dri/renderD129 2>/dev/null | awk 'NR>1 {print $1}' | sort -u | tr '
+' ' ' || true)
+        if [ -n "$handles" ]; then
+            r_status=$(cat "$nv_dev/power/runtime_status" 2>/dev/null || true)
+            if [ "$r_status" = "suspended" ]; then
+                echo "[OK] dGPU is suspended (idle handles: $handles)"
+            else
+                echo "[WARN] Processes actively holding dGPU in non-suspended state: $handles"
+                issues=$((issues + 1))
+            fi
+        else
+            echo "[OK] Zero processes holding /dev/nvidia* or /dev/dri/renderD129"
+        fi
+    fi
+
+    # 5. Check Desktop Launchers
+    rogue=$(grep -l 'PrefersNonDefaultGPU=true' /usr/share/applications/*.desktop 2>/dev/null || true)
+    unfixed=""
+    if [ -n "$rogue" ]; then
+        for f in $rogue; do
+            base=$(basename "$f")
+            user_override="$HOME/.local/share/applications/$base"
+            if [ -f "$user_override" ] && grep -q 'PrefersNonDefaultGPU=false' "$user_override"; then
+                continue
+            fi
+            unfixed="$unfixed $f"
+        done
+    fi
+
+    if [ -n "$unfixed" ]; then
+        echo "[WARN] Launchers forcing discrete GPU without user override:"
+        for f in $unfixed; do
+            echo "  - $f"
+            issues=$((issues + 1))
+        done
+    else
+        echo "[OK] Zero unhandled launchers forcing discrete GPU"
+    fi
+
+    echo ""
+    if [ "$issues" -eq 0 ]; then
+        echo "Status: System is fully optimized for RTD3."
+    else
+        echo "Status: $issues issue(s) detected. Run 'legion-rtd3 fix-launchers' or review system config."
+    fi
+}
+
+cmd_fix_launchers() {
+    echo "=== legion-rtd3: Fixing Discrete Launchers ==="
+    mkdir -p "$HOME/.local/share/applications"
+    count=0
+    for f in /usr/share/applications/*.desktop; do
+        [ -f "$f" ] || continue
+        if grep -q 'PrefersNonDefaultGPU=true' "$f"; then
+            base=$(basename "$f")
+            dest="$HOME/.local/share/applications/$base"
+            cp "$f" "$dest"
+            sed -i 's/PrefersNonDefaultGPU=true/PrefersNonDefaultGPU=false/' "$dest"
+            sed -i 's/X-KDE-RunOnDiscreteGpu=true/X-KDE-RunOnDiscreteGpu=false/' "$dest"
+            echo "Patched: $base -> $dest (pinned to APU)"
+            count=$((count + 1))
+        fi
+    done
+    if [ "$count" -gt 0 ] && command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+    fi
+    echo "Finished. $count launcher(s) updated."
+}
+
+case "${1:-status}" in
+    status)         cmd_status ;;
+    doctor|audit)   cmd_doctor ;;
+    fix-launchers)  cmd_fix_launchers ;;
+    -h|--help)
+        echo "Usage: legion-rtd3 <command>"
+        echo "Commands:"
+        echo "  status         Show current dGPU power state, wattage, and refresh rate"
+        echo "  doctor         Audit system for wake-lock culprits and misconfigurations"
+        echo "  fix-launchers  Override launchers forcing dGPU (pins client UI to APU)"
+        ;;
+    *)
+        echo "Unknown command: $1. Run 'legion-rtd3 --help' for usage." >&2
+        exit 1
+        ;;
+esac
