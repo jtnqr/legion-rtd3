@@ -1,9 +1,10 @@
 #!/bin/sh
 # Dynamic GPU environment generator for systemd user session
-# Adapts dynamically to Dedicated (BIOS MUX or EnvyControl), Hybrid, and Integrated modes
+# Supports AMD (Legion) and Intel (Legion Intel / Legion "i" variants)
 
-has_amd=0
+has_igpu=0
 has_nvidia=0
+igpu_vendor=""
 
 # Detect display-capable GPUs from PCI class 03xxxx (VGA / 3D / Display)
 for dev in /sys/bus/pci/devices/*; do
@@ -12,31 +13,42 @@ for dev in /sys/bus/pci/devices/*; do
     case "$class" in
         0x0300*|0x0302*|0x0380*)
             vendor=$(cat "$dev/vendor" 2>/dev/null || true)
-            [ "$vendor" = "0x1002" ] && has_amd=1
-            [ "$vendor" = "0x10de" ] && has_nvidia=1
+            case "$vendor" in
+                0x1002) # AMD
+                    has_igpu=1
+                    igpu_vendor="amd"
+                    ;;
+                0x8086) # Intel
+                    has_igpu=1
+                    igpu_vendor="intel"
+                    ;;
+                0x10de) # NVIDIA
+                    has_nvidia=1
+                    ;;
+            esac
             ;;
     esac
 done
 
 # Dedicated mode:
-# - BIOS MUX switch set to Discrete (AMD iGPU unpowered / absent from PCI bus)
+# - BIOS MUX switch set to Discrete (iGPU unpowered / absent from PCI bus)
 # - OR EnvyControl set to 'nvidia' (/etc/X11/xorg.conf exists)
-if [ "$has_amd" -eq 0 ] || [ -f /etc/X11/xorg.conf ]; then
+if [ "$has_igpu" -eq 0 ] || [ -f /etc/X11/xorg.conf ]; then
     echo "LIBVA_DRIVER_NAME=nvidia"
     echo "__GLX_VENDOR_LIBRARY_NAME=nvidia"
-    # Unrestricted Vulkan loader allows games and apps to natively find NVIDIA ICD
     exit 0
 fi
 
 # Hybrid mode:
-# - Both AMD APU and NVIDIA dGPU present on PCI bus
-if [ "$has_amd" -eq 1 ] && [ "$has_nvidia" -eq 1 ]; then
-    # Pin default Vulkan to AMD APU so desktop/background apps do not wake dGPU
-    # High-performance games use 'prime-run <command>' to offload to NVIDIA
-    echo "VK_DRIVER_FILES=/usr/share/vulkan/icd.d/radeon_icd.x86_64.json"
+# - Both iGPU and NVIDIA dGPU present on PCI bus
+if [ "$has_igpu" -eq 1 ] && [ "$has_nvidia" -eq 1 ]; then
+    if [ "$igpu_vendor" = "amd" ] && [ -f /usr/share/vulkan/icd.d/radeon_icd.x86_64.json ]; then
+        echo "VK_DRIVER_FILES=/usr/share/vulkan/icd.d/radeon_icd.x86_64.json"
+    elif [ "$igpu_vendor" = "intel" ] && [ -f /usr/share/vulkan/icd.d/intel_icd.x86_64.json ]; then
+        echo "VK_DRIVER_FILES=/usr/share/vulkan/icd.d/intel_icd.x86_64.json"
+    fi
     exit 0
 fi
 
 # Integrated mode:
-# - Only AMD APU present (NVIDIA disabled/removed)
-# Pure Mesa defaults apply; no overrides needed.
+# - Only iGPU present. Pure Mesa defaults apply; no overrides needed.
