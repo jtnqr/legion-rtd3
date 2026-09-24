@@ -8,7 +8,7 @@ Comprehensive Linux Hybrid Graphics Runtime D3cold (RTD3) power management and s
 
 1. **dGPU Battery Drain in Hybrid Mode (`D0` lock)**:
    * Desktop applications (Telegram, Electron apps, Brave/Chrome, Steam CEF) probe Vulkan ICDs and EGL vendors at startup, opening `/dev/dri/renderD129` or `/dev/nvidiactl` and locking the dGPU awake in `D0` (~20W–25W continuous battery drain).
-   * **Fix**: Pins default session Vulkan to AMD Radeon ICD and prioritizes Mesa EGL, allowing background apps to run purely on the APU while the dGPU sleeps in `D3cold` (0W).
+   * **Fix**: Pins default session Vulkan to AMD Radeon ICD via dynamic environment generation, allowing background apps to run purely on the APU while the dGPU sleeps in `D3cold` (0W).
 
 2. **Monitoring Tools Waking the dGPU (`nvtop`, `btop`)**:
    * Hardware monitors dynamically query `libnvidia-ml.so` (NVML) on startup, triggering immediate PCIe wakeups even if no discrete GPU tasks are running.
@@ -18,9 +18,9 @@ Comprehensive Linux Hybrid Graphics Runtime D3cold (RTD3) power management and s
    * Upstream Valve `steam.desktop` specifies `PrefersNonDefaultGPU=true`, causing GNOME Shell to inject PRIME offload variables into the Steam client and all `steamwebhelper` web processes.
    * **Fix**: Provides a launcher override pinning the Steam client to the APU (`legion-rtd3 fix-launchers`), while preserving discrete GPU offload for games via `prime-run %command%`.
 
-4. **Lingering DRM Surface Wake Locks after Monitor Disconnect**:
-   * When an external HDMI or USB-C monitor is unplugged, upstream DRM drivers can leave runtime PM usage counters stuck in `active` (NVIDIA issue #759).
-   * **Fix**: Deploys an automated udev hotplug rule (`81-nvidia-hotplug-pm.rules`) that re-arms PCIe `power/control = auto` upon DRM display disconnect events.
+4. **External Display Detection & Lingering DRM Surface Wake Locks**:
+   * On battery in `D3cold`, plugging a USB-C dock fails DP Alt Mode link training because the hardwired discrete GPU is unpowered. Conversely, when an external monitor is unplugged, upstream DRM drivers can leave runtime PM usage counters stuck in `active` (NVIDIA issue #759).
+   * **Fix**: Deploys automated udev rules (`82-dock-dgpu-wake.rules` and `81-nvidia-hotplug-pm.rules`) to wake the dGPU upon USB-C dock connection for immediate DP link training, and re-arm PCIe `power/control = auto` upon display or dock disconnect.
 
 5. **Universal Multi-Mode Compatibility**:
    * Dynamically inspects the PCI bus at session login. Works out of the box across **Hybrid**, **Dedicated** (BIOS MUX switch or EnvyControl), and **Integrated** modes without manual edits to `/etc/environment`.
@@ -40,8 +40,6 @@ legion-rtd3/
 ├── src/
 │   └── no_nvml.c                              # Sleep-aware NVML C interceptor & symbol stub
 ├── etc/
-│   ├── glvnd/egl_vendor.d/
-│   │   └── 00_mesa.json                       # Package-update resilient Mesa EGL priority
 │   ├── systemd/user-environment-generators/
 │   │   └── 10-gpu-mode.sh                     # Dynamic session mode generator
 │   ├── tlp.d/
@@ -49,7 +47,8 @@ legion-rtd3/
 │   └── udev/rules.d/
 │       ├── 61-mutter-primary-gpu.rules        # Mutter primary GPU preference for AMD
 │       ├── 80-nvidia-pm.rules                 # PCIe Runtime D3cold rules
-│       └── 81-nvidia-hotplug-pm.rules         # DRM hotplug re-arm PM rule
+│       ├── 81-nvidia-hotplug-pm.rules         # DRM hotplug re-arm PM rule
+│       └── 82-dock-dgpu-wake.rules            # USB-C dock connect wake / disconnect re-arm rule
 ├── desktop/
 │   └── steam.desktop                          # APU-pinned Steam client launcher
 └── patches/

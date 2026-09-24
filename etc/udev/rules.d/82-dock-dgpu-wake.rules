@@ -1,0 +1,5 @@
+# Wake NVIDIA dGPU when USB-C dock connects so DisplayPort Alt Mode trains properly
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="2109", ATTR{idProduct}=="8886", RUN+="/bin/sh -c 'echo on > /sys/bus/pci/devices/0000:01:00.0/power/control'"
+
+# Re-enable PCIe Runtime PM when USB-C dock is disconnected
+ACTION=="remove", SUBSYSTEM=="usb", ENV{PRODUCT}=="2109/8886/*", RUN+="/bin/sh -c 'echo auto > /sys/bus/pci/devices/0000:01:00.0/power/control'"

@@ -70,12 +70,12 @@ cmd_doctor() {
         fi
     fi
 
-    # 2. Check EGL Vendor Priority
+    # 2. Check EGL Vendor Configuration (ensure no overrides break multi-GPU displays)
     if [ -f /etc/glvnd/egl_vendor.d/00_mesa.json ]; then
-        echo "[OK] Mesa EGL vendor priority is deployed in /etc/"
-    else
-        echo "[WARN] /etc/glvnd/egl_vendor.d/00_mesa.json missing (Mesa may not take priority)"
+        echo "[FAIL] /etc/glvnd/egl_vendor.d/00_mesa.json is present (breaks external display EGL in Mutter)"
         issues=$((issues + 1))
+    else
+        echo "[OK] Clean GLVND EGL vendor configuration"
     fi
 
     # 3. Check Background Services
